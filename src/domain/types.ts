@@ -13,6 +13,11 @@ export interface Campaign {
   status: CampaignStatus;
   externalId?: string;
   updatedAt: number;
+  // When a worker claims a campaign (IN_PROGRESS) it holds a time-bounded
+  // lease. If the worker crashes without finishing, the lease expires and
+  // another worker is allowed to reclaim the campaign. Unset when no worker
+  // holds the claim.
+  leaseExpiresAt?: number;
 }
 
 export interface LaunchJob {
