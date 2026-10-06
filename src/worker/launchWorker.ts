@@ -1,7 +1,7 @@
 import type { LaunchJob } from '../domain/types.js';
 import { CampaignStore } from '../store/campaignStore.js';
 import { InMemoryQueue } from '../queue/inMemoryQueue.js';
-import { FakeMetaClient } from '../external/fakeMetaClient.js';
+import { FakeMetaClient, MetaTimeoutError } from '../external/fakeMetaClient.js';
 
 /**
  * Processes queued launch jobs by asking the external platform to
@@ -79,7 +79,31 @@ export class LaunchWorker {
         status: 'ACTIVE',
         externalId: result.externalId,
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof MetaTimeoutError) {
+        // A timeout means "I don't know what happened" — the campaign may or
+        // may not have been created, and the response doesn't tell us. We must
+        // NOT treat this as a plain failure, because doing so would invite a
+        // retry that could create a duplicate. Reconcile by asking the platform
+        // whether a record exists for this requestKey.
+        const existing = await this.metaClient.lookupByRequestKey(job.requestKey);
+        if (existing.length > 0) {
+          // The side effect did happen (TIMEOUT_AFTER_CREATE). Adopt the
+          // orphaned external campaign rather than failing.
+          this.store.update(job.campaignId, {
+            status: 'ACTIVE',
+            externalId: existing[0]!.externalId,
+          });
+          return;
+        }
+        // Nothing was created (TIMEOUT_BEFORE_CREATE). It is genuinely safe to
+        // retry, so back out of the claim to LAUNCHING rather than terminally
+        // failing.
+        this.store.update(job.campaignId, { status: 'LAUNCHING' });
+        return;
+      }
+
+      // A non-timeout error is an unambiguous failure.
       this.store.update(job.campaignId, { status: 'FAILED' });
     }
   }
