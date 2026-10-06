@@ -40,6 +40,21 @@ export class LaunchWorker {
       return;
     }
 
+    // Concurrency guard: atomically claim this campaign before doing any async
+    // work. compareAndSetStatus runs synchronously, so of N workers racing on
+    // the same job exactly one flips LAUNCHING -> IN_PROGRESS and proceeds; the
+    // losers get false and back off here, never reaching the external call.
+    // This is what prevents two workers from both passing the reconcile check
+    // below and creating two campaigns.
+    const claimed = this.store.compareAndSetStatus(
+      job.campaignId,
+      'LAUNCHING',
+      'IN_PROGRESS'
+    );
+    if (!claimed) {
+      return;
+    }
+
     // Idempotency guard #2: the external platform does no deduplication of
     // its own, so before creating anything we ask whether a campaign already
     // exists for this requestKey. If a previous delivery of this same logical
